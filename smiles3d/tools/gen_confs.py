@@ -18,115 +18,12 @@
 ##
 
 
-import sys
 import argparse
+import logging as log
 
-import CDPL.Chem as Chem
-import CDPL.ConfGen as ConfGen
+import CDPL.Chem as CDPLChem
+import CDPL.ConfGen as CDPLConfGen
 
-
-# generates a conformer ensemble of the argument molecule using
-# the provided initialized ConfGen.ConformerGenerator instance
-def genConfEnsemble(mol: Chem.Molecule, conf_gen: ConfGen.ConformerGenerator) -> (int, int):
-    # prepare the molecule for conformer generation
-    ConfGen.prepareForConformerGeneration(mol) 
-
-    # generate the conformer ensemble
-    status = conf_gen.generate(mol)             
-    num_confs = conf_gen.getNumConformers()
-    
-    # if successful, store the generated conformer ensemble as
-    # per atom 3D coordinates arrays (= the way conformers are represented in CDPKit)
-    if status == ConfGen.ReturnCode.SUCCESS or status == ConfGen.ReturnCode.TOO_MUCH_SYMMETRY:
-        conf_gen.setConformers(mol)                
-    else:
-        num_confs = 0
-        
-    # return status code and the number of generated conformers
-    return (status, num_confs)
-
-def main() -> None:
-    args = parseArgs()
-    
-    # create reader for input molecules (format specified by file extension)
-    reader = Chem.MoleculeReader(args.in_file) 
-
-    # create writer for the generated conformer ensembles (format specified by file extension)
-    writer = Chem.MolecularGraphWriter(args.out_file) 
-
-    # create and initialize an instance of the class ConfGen.ConformerGenerator which
-    # will perform the actual conformer ensemble generation work
-    conf_gen = ConfGen.ConformerGenerator()
-
-    conf_gen.settings.timeout = args.max_time * 1000          # apply the -t argument
-    conf_gen.settings.minRMSD = args.min_rmsd                 # apply the -r argument
-    conf_gen.settings.energyWindow = args.e_window            # apply the -e argument
-    conf_gen.settings.maxNumOutputConformers = args.max_confs # apply the -n argument
-
-    # dictionary mapping status codes to human readable strings
-    status_to_str = { ConfGen.ReturnCode.UNINITIALIZED                  : 'uninitialized',
-                      ConfGen.ReturnCode.TIMEOUT                        : 'max. processing time exceeded',
-                      ConfGen.ReturnCode.ABORTED                        : 'aborted',
-                      ConfGen.ReturnCode.FORCEFIELD_SETUP_FAILED        : 'force field setup failed',
-                      ConfGen.ReturnCode.FORCEFIELD_MINIMIZATION_FAILED : 'force field structure refinement failed',
-                      ConfGen.ReturnCode.FRAGMENT_LIBRARY_NOT_SET       : 'fragment library not available',
-                      ConfGen.ReturnCode.FRAGMENT_CONF_GEN_FAILED       : 'fragment conformer generation failed',
-                      ConfGen.ReturnCode.FRAGMENT_CONF_GEN_TIMEOUT      : 'fragment conformer generation timeout',
-                      ConfGen.ReturnCode.FRAGMENT_ALREADY_PROCESSED     : 'fragment already processed',
-                      ConfGen.ReturnCode.TORSION_DRIVING_FAILED         : 'torsion driving failed',
-                      ConfGen.ReturnCode.CONF_GEN_FAILED                : 'conformer generation failed' }
-    
-    # create an instance of the default implementation of the Chem.Molecule interface
-    mol = Chem.BasicMolecule()
-    i = 1
-    
-    # read and process molecules one after the other until the end of input has been reached
-    try:
-        while reader.read(mol):
-            # compose a simple molecule identifier
-            mol_id = Chem.getName(mol).strip() 
-
-            if mol_id == '':
-                mol_id = '#' + str(i) # fallback if name is empty
-            else:
-                mol_id = '\'%s\' (#%s)' % (mol_id, str(i))
-
-            if not args.quiet:
-                print('- Generating conformers for molecule %s...' % mol_id)
-
-            try:
-                # generate conformer ensemble for read molecule
-                status, num_confs = genConfEnsemble(mol, conf_gen) 
-
-                # check for severe error reported by status code
-                if status != ConfGen.ReturnCode.SUCCESS and status != ConfGen.ReturnCode.TOO_MUCH_SYMMETRY:
-                    if args.quiet:
-                        print('Error: conformer ensemble generation for molecule %s failed: %s' % (mol_id, status_to_str[status]))
-                    else:
-                        print(' -> Conformer ensemble generation failed: %s' % status_to_str[status])
-
-                elif not args.quiet:  # arrives here only if no severe error occurred
-                    if status == ConfGen.ReturnCode.TOO_MUCH_SYMMETRY:
-                        print(' -> Generated %s conformers (warning: too much top. symmetry - output ensemble may contain duplicates)' % str(num_confs))
-                    else:
-                        print(' -> Generated %s conformer(s)' % str(num_confs))
-                        
-                # output generated ensemble (if available)
-                if num_confs > 0:
-                    if not writer.write(mol):   
-                        sys.exit('Error: output of conformer ensemble for molecule %s failed' % mol_id)
-                        
-            except Exception as e:
-                sys.exit('Error: conformer ensemble generation or output for molecule %s failed: %s' % (mol_id, str(e)))
-
-            i += 1
-                
-    except Exception as e: # handle exception raised in case of severe read errors
-        sys.exit('Error: reading molecule failed: ' + str(e))
-
-    writer.close()
-    sys.exit(0)
-        
 def parseArgs() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generates conformer ensembles for the given input molecules.')
 
@@ -176,6 +73,108 @@ def parseArgs() -> argparse.Namespace:
                         help='Disable progress output (default: false)')
     
     return parser.parse_args()
+
+
+# generates a conformer ensemble of the argument molecule using
+# the provided initialized ConfGen.ConformerGenerator instance
+def genConfEnsemble(mol: CDPLChem.Molecule, conf_gen: CDPLConfGen.ConformerGenerator) -> tuple[int,int]:
+    # prepare the molecule for conformer generation
+    CDPLConfGen.prepareForConformerGeneration(mol) 
+
+    # generate the conformer ensemble
+    status = conf_gen.generate(mol)             
+    num_confs = conf_gen.getNumConformers()
+    
+    # if successful, store the generated conformer ensemble as
+    # per atom 3D coordinates arrays (= the way conformers are represented in CDPKit)
+    if status == CDPLConfGen.ReturnCode.SUCCESS or status == CDPLConfGen.ReturnCode.TOO_MUCH_SYMMETRY:
+        conf_gen.setConformers(mol)                
+    else:
+        num_confs = 0
+        
+    # return status code and the number of generated conformers
+    return (status, num_confs)
+
+def readMolecule(in_file: str) -> list:
+    """
+    Reads a molecule from the specified input file.
+
+    Parameters:
+    in_file (str): The name of the input file.
+
+    Returns:
+    CDPLChem.Molecule: The molecule read from the input file.
+    """
+    mol_list = []
+    reader = CDPLChem.MoleculeReader(in_file)
+    mol = CDPLChem.BasicMolecule()
+    try:
+        while reader.read(mol):
+            mol_list.append(mol)
+            mol = CDPLChem.BasicMolecule()
+    except Exception as e:
+        log.error(f'Error: reading molecule failed: {str(e)}')
+    return mol_list
+
+def process_mol(in_file: str, out_file: str, max_time: int, min_rmsd: float, e_window: float, max_confs: int) -> None:
+    status_to_str = { CDPLConfGen.ReturnCode.UNINITIALIZED                  : 'uninitialized',
+                      CDPLConfGen.ReturnCode.TIMEOUT                        : 'max. processing time exceeded',
+                      CDPLConfGen.ReturnCode.ABORTED                        : 'aborted',
+                      CDPLConfGen.ReturnCode.FORCEFIELD_SETUP_FAILED        : 'force field setup failed',
+                      CDPLConfGen.ReturnCode.FORCEFIELD_MINIMIZATION_FAILED : 'force field structure refinement failed',
+                      CDPLConfGen.ReturnCode.FRAGMENT_LIBRARY_NOT_SET       : 'fragment library not available',
+                      CDPLConfGen.ReturnCode.FRAGMENT_CONF_GEN_FAILED       : 'fragment conformer generation failed',
+                      CDPLConfGen.ReturnCode.FRAGMENT_CONF_GEN_TIMEOUT      : 'fragment conformer generation timeout',
+                      CDPLConfGen.ReturnCode.FRAGMENT_ALREADY_PROCESSED     : 'fragment already processed',
+                      CDPLConfGen.ReturnCode.TORSION_DRIVING_FAILED         : 'torsion driving failed',
+                      CDPLConfGen.ReturnCode.CONF_GEN_FAILED                : 'conformer generation failed' }
+
+    # create writer for the generated 3D structures (format specified by file extension)
+    writer = CDPLChem.MolecularGraphWriter(out_file) 
+    # export only a single 3D structure (in case of multi-conf. input molecules)
+    CDPLChem.setMultiConfExportParameter(writer, False)
+    
+    # create and initialize an instance of the class ConfGen.ConformerGenerator which
+    # will perform the actual conformer ensemble generation work
+    conf_gen = CDPLConfGen.ConformerGenerator()
+
+    conf_gen.settings.timeout = max_time * 1000          # apply the -t argument
+    conf_gen.settings.minRMSD = min_rmsd                 # apply the -r argument
+    conf_gen.settings.energyWindow = e_window            # apply the -e argument
+    conf_gen.settings.maxNumOutputConformers = max_confs # apply the -n argument
+
+    mol_list = readMolecule(in_file)
+
+    for ind, mol in enumerate(mol_list):
+        mol_id = ''.join([CDPLChem.getName(mol).strip(), '#'+str(ind+1)]).strip()
+        log.info(f'- Generating 3D structure of molecule {mol_id}...')
+        try:
+            status, num_confs = genConfEnsemble(mol, conf_gen)
+        except Exception as e:
+            log.error(f'Error: conformer ensemble generation or output for molecule {mol_id} failed: {str(e)}')
+            continue
+        if status != CDPLConfGen.ReturnCode.SUCCESS and status != CDPLConfGen.ReturnCode.TOO_MUCH_SYMMETRY:
+            log.error(f'Conformer ensemble generation for molecule {mol_id} failed: {status_to_str[status]}')
+
+        elif status == CDPLConfGen.ReturnCode.TOO_MUCH_SYMMETRY:
+            log.error(f' -> Generated {str(num_confs)} conformers (warning: too much top. symmetry - output ensemble may contain duplicates)')
+        else:
+            log.info(f' -> Generated {str(num_confs)} conformer(s)')
+
+        if num_confs > 0:
+            if not writer.write(mol):
+                log.error(f'Error: writing 3D structure of molecule {mol_id} failed')   
+        
+    writer.close()
+
+def main() -> None:
+    args = parseArgs()
+    if args.quiet:
+        log.basicConfig(format="%(levelname)s: %(message)s")
+    else:
+        log.basicConfig(format="%(levelname)s: %(message)s", level=log.DEBUG)
+    process_mol(args.in_file, args.out_file, args.max_time, args.min_rmsd, args.e_window, args.max_confs)
+        
 
 if __name__ == '__main__':
     main()

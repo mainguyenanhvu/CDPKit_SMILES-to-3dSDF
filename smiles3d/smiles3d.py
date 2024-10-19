@@ -19,7 +19,7 @@ def parse_args():
     parser.add_argument('-i', dest='in_file',
                         required=True,
                         metavar='<file>',
-                        help='Molecule input file in CSV format. Columns which are "smiles" and "id" are required.')
+                        help='Molecule input file in CSV whose columns which are "smiles" and "id" are required or SMI file or SMILES string.')
     parser.add_argument('-o', dest='out_file',
                         required=True,
                         metavar='<file>',
@@ -30,6 +30,12 @@ def parse_args():
     parser.add_argument('--id_col', type=str,
                         default='id',
                         help='Name of the column containing IDs (default: "id")')
+    parser.add_argument('--is_remove_duplicates', action="store_true",
+                        default=False,
+                        help='If set True, flag to remove duplicate smiles in files.')
+    parser.add_argument('--is_combined', action="store_true",
+                        default=False,
+                        help='If set False, flag to create singly file.')
     parser.add_argument('-t', dest='max_time',
                         metavar='<int>',
                         type=int,
@@ -81,7 +87,9 @@ def write_output(temp_output_file, output_file):
     """
     sdf_supplier = Chem.SDMolSupplier(temp_output_file, removeHs=False)
     conf_counts = {}
-    sdf_writer = Chem.SDWriter(output_file)
+    sdf_writer = None
+    if args.is_combined:
+        sdf_writer = Chem.SDWriter(output_file)
     for mol in sdf_supplier:
         if mol is None:
             continue
@@ -91,9 +99,74 @@ def write_output(temp_output_file, output_file):
         conf_label = f"{mol_id}_conf{conf_counts[mol_id]}"
         mol.SetProp("_Name", str(conf_label))
         conf_counts[mol_id] += 1
-        sdf_writer.write(mol)
-    sdf_writer.close()
+        if sdf_writer:
+            sdf_writer.write(mol)
+        else:
+            sdf_writer_single = Chem.SDWriter(output_file.replace(".sdf", f"_{conf_label}.sdf"))
+            sdf_writer_single.write(mol)
+            sdf_writer_single.close()
+    if sdf_writer:
+        sdf_writer.close()
 
+def standardize_ID(df):
+    """
+    This function standardizes the IDs in a DataFrame by removing any punctuation from the IDs.
+
+    Parameters:
+    df (pandas.DataFrame): The DataFrame containing the IDs to be standardized. The IDs are assumed to be in a column named by the value of the 'id_col' argument.
+
+    Returns:
+    pandas.DataFrame: The DataFrame with the standardized IDs. The IDs are stored in a column named by the value of the 'id_col' argument.
+
+    Ref: https://stackoverflow.com/a/50444347/10987905
+    """
+    punct = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{}~'   # `|` is not present here
+    transtab = str.maketrans(dict.fromkeys(punct, ''))
+
+    df[args.id_col] = '|'.join(df[args.id_col].tolist()).translate(transtab).split('|')
+
+    return df
+
+def read_input(in_file):
+    """
+    Read input file or string and return a pandas DataFrame.
+
+    The function assumes that the input is either a csv file, a smi file, or a SMILES string.
+    If the input is a csv file, it is read into a pandas DataFrame using pd.read_csv.
+    If the input is a smi file, it is read into a pandas DataFrame using pd.read_csv with the
+    header set to None and the column name set to the value of the smi_col argument.
+    If the input is a SMILES string, it is converted into a pandas DataFrame with a single
+    column with the name of the smi_col argument.
+
+    If the id_col argument is not found in the input DataFrame, it is created by joining
+    the output file name with the row number.
+
+    If the is_remove_duplicates argument is True, the function removes duplicate SMILES
+    strings from the input DataFrame.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    df : pd.DataFrame
+        The input DataFrame with the ID column added if necessary and duplicates removed
+        if necessary.
+    """
+    if in_file.endswith('.csv'):
+        df = pd.read_csv(args.in_file)
+    elif in_file.endswith('.smi'):
+        df = pd.read_csv(in_file, header=None, names=[args.smi_col])
+    else:
+        df = pd.DataFrame({args.smi_col: [in_file]})
+    if args.id_col not in df.columns:
+        df[args.id_col] = ['_'.join([os.path.basename(args.out_file).replace('.sdf', ''), str(x)]) for x in range(1, df.shape[0]+1)]
+    else:
+        standardize_ID(df)
+    if args.is_remove_duplicates:
+        df.drop_duplicates(subset=[args.smi_col], inplace=True, keep='first')
+    return df
 
 def generate_conformers(in_file, out_file, smiles_col='smiles', id_col='id', max_time=60, num_confs=10, quiet=False):
     """
@@ -123,9 +196,8 @@ def generate_conformers(in_file, out_file, smiles_col='smiles', id_col='id', max
     tmp_dir = tempfile.mkdtemp(prefix='smi3d_')
     temp_input_file = os.path.join(tmp_dir, 'temp_input.sdf')
     temp_output_file = os.path.join(tmp_dir, 'temp_output.sdf')
-    output_file = os.path.join(tmp_dir, 'temp_output2.sdf')
     
-    df = pd.read_csv(in_file)
+    df = read_input(in_file)
     if (smiles_col not in df.columns) or (id_col not in df.columns):
         raise ValueError(f"The CSV file does not contain the required columns which are {smiles_col} and {id_col}.")
     smiles_list = df[smiles_col].to_list()

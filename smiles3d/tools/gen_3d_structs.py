@@ -18,115 +18,17 @@
 ##
 
 
-import sys
 import argparse
-
-import CDPL.Chem as Chem
-import CDPL.ConfGen as ConfGen
-
-
-# generates a low-energy 3D structure of the argument molecule using
-# the provided initialized ConfGen.StructureGenerator instance
-def gen3DStructure(mol: Chem.Molecule, struct_gen: ConfGen.StructureGenerator) -> int:
-    # prepare the molecule for 3D structure generation
-    ConfGen.prepareForConformerGeneration(mol) 
-
-    # generate the 3D structure
-    status = struct_gen.generate(mol)             
-    
-    # if successful, store the generated conformer ensemble as
-    # per atom 3D coordinates arrays (= the way conformers are represented in CDPKit)
-    if status == ConfGen.ReturnCode.SUCCESS:
-        struct_gen.setCoordinates(mol)                
-        
-    # return status code
-    return status
-
-def main() -> None:
-    args = parseArgs()
-    
-    # create reader for input molecules (format specified by file extension)
-    reader = Chem.MoleculeReader(args.in_file) 
-
-    # create writer for the generated 3D structures (format specified by file extension)
-    writer = Chem.MolecularGraphWriter(args.out_file) 
-
-    # export only a single 3D structure (in case of multi-conf. input molecules)
-    Chem.setMultiConfExportParameter(writer, False)
-    
-    # create and initialize an instance of the class ConfGen.StructureGenerator which will
-    # perform the actual 3D structure generation work
-    struct_gen = ConfGen.StructureGenerator()
-
-    struct_gen.settings.timeout = args.max_time * 1000 # apply the -t argument
-
-    # dictionary mapping status codes to human readable strings
-    status_to_str = { ConfGen.ReturnCode.UNINITIALIZED                  : 'uninitialized',
-                      ConfGen.ReturnCode.TIMEOUT                        : 'max. processing time exceeded',
-                      ConfGen.ReturnCode.ABORTED                        : 'aborted',
-                      ConfGen.ReturnCode.FORCEFIELD_SETUP_FAILED        : 'force field setup failed',
-                      ConfGen.ReturnCode.FORCEFIELD_MINIMIZATION_FAILED : 'force field structure refinement failed',
-                      ConfGen.ReturnCode.FRAGMENT_LIBRARY_NOT_SET       : 'fragment library not available',
-                      ConfGen.ReturnCode.FRAGMENT_CONF_GEN_FAILED       : 'fragment conformer generation failed',
-                      ConfGen.ReturnCode.FRAGMENT_CONF_GEN_TIMEOUT      : 'fragment conformer generation timeout',
-                      ConfGen.ReturnCode.FRAGMENT_ALREADY_PROCESSED     : 'fragment already processed',
-                      ConfGen.ReturnCode.TORSION_DRIVING_FAILED         : 'torsion driving failed',
-                      ConfGen.ReturnCode.CONF_GEN_FAILED                : 'conformer generation failed' }
-    
-    # create an instance of the default implementation of the Chem.Molecule interface
-    mol = Chem.BasicMolecule()
-    i = 1
-    
-    # read and process molecules one after the other until the end of input has been reached
-    try:
-        while reader.read(mol):
-            # compose a simple molecule identifier
-            mol_id = Chem.getName(mol).strip() 
-
-            if mol_id == '':
-                mol_id = '#' + str(i) # fallback if name is empty
-            else:
-                mol_id = '\'%s\' (#%s)' % (mol_id, str(i))
-
-            if not args.quiet:
-                print('- Generating 3D structure of molecule %s...' % mol_id)
-
-            try:
-                # generate 3D structure of the read molecule
-                status = gen3DStructure(mol, struct_gen) 
-
-                # check for severe error reported by status code
-                if status != ConfGen.ReturnCode.SUCCESS:
-                    if args.quiet:
-                        print('Error: 3D structure generation for molecule %s failed: %s' % (mol_id, status_to_str[status]))
-                    else:
-                        print(' -> 3D structure generation failed: %s' % status_to_str[status])
-                else: 
-                    # enforce the output of 3D coordinates in case of MDL file formats
-                    Chem.setMDLDimensionality(mol, 3)
-
-                    # output the generated 3D structure                    
-                    if not writer.write(mol):   
-                        sys.exit('Error: writing 3D structure of molecule %s failed' % mol_id)
-                        
-            except Exception as e:
-                sys.exit('Error: 3D structure generation or output for molecule %s failed: %s' % (mol_id, str(e)))
-
-            i += 1
-                
-    except Exception as e: # handle exception raised in case of severe read errors
-        sys.exit('Error: reading molecule failed: ' + str(e))
-
-    writer.close()
-    sys.exit(0)
-        
+import logging as log
+import CDPL.Chem as CDPLChem
+import CDPL.ConfGen as CDPLConfGen
 def parseArgs() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generates conformer ensembles for the given input molecules.')
 
-    parser.add_argument('-i',
+    parser.add_argument('-i', type=str,
                         dest='in_file',
                         required=True,
-                        metavar='<file>',
+                        # metavar='<file>',
                         help='Molecule input file')
     parser.add_argument('-o',
                         dest='out_file',
@@ -135,19 +37,133 @@ def parseArgs() -> argparse.Namespace:
                         help='Conformer ensemble output file')
     parser.add_argument('-t',
                         dest='max_time',
-                        required=False,
                         metavar='<int>',
                         type=int,
                         default=3600,
                         help='Max. allowed molecule processing time (default: 3600 sec)')
     parser.add_argument('-q',
                         dest='quiet',
-                        required=False,
                         action='store_true',
                         default=False,
                         help='Disable progress output (default: false)')
     
     return parser.parse_args()
+
+def gen3DStructure(mol: CDPLChem.Molecule, struct_gen: CDPLConfGen.StructureGenerator) -> int:
+    """
+    Generates a low-energy 3D structure for the given molecule using the provided initialized 
+    CDPLConfGen.StructureGenerator instance.
+
+    Parameters:
+    mol (CDPLChem.Molecule): The molecule for which the 3D structure needs to be generated.
+    struct_gen (CDPLConfGen.StructureGenerator): An instance of the class CDPLConfGen.StructureGenerator 
+                                            that will perform the actual 3D structure generation work.
+
+    Returns:
+    int: The status code indicating the success or failure of the 3D structure generation.
+         The status code can be one of the following:
+         - CDPLConfGen.ReturnCode.SUCCESS: The 3D structure generation was successful.
+         - Other status codes indicate different types of errors.
+    """
+    # prepare the molecule for 3D structure generation
+    CDPLConfGen.prepareForConformerGeneration(mol) 
+
+    # generate the 3D structure
+    status = struct_gen.generate(mol)             
+
+    # if successful, store the generated conformer ensemble as
+    # per atom 3D coordinates arrays (= the way conformers are represented in CDPKit)
+    if status == CDPLConfGen.ReturnCode.SUCCESS:
+        struct_gen.setCoordinates(mol)                
+
+    return status
+
+
+def readMolecule(in_file: str) -> list:
+    """
+    Reads a molecule from the specified input file.
+
+    Parameters:
+    in_file (str): The name of the input file.
+
+    Returns:
+    CDPLChem.Molecule: The molecule read from the input file.
+    """
+    mol_list = []
+    reader = CDPLChem.MoleculeReader(in_file)
+    mol = CDPLChem.BasicMolecule()
+    try:
+        while reader.read(mol):
+            mol_list.append(mol)
+            mol = CDPLChem.BasicMolecule()
+    except Exception as e:
+        log.error(f'Error: reading molecule failed: {str(e)}')
+    return mol_list
+
+def process_mol(in_file: str, out_file: str, max_time: int) -> None:
+    """
+    Reads a molecule from the specified input file, generates a 3D structure
+    using the provided instance of CDPLConfGen.StructureGenerator, and writes the
+    generated 3D structure to the specified output file.
+
+    Parameters:
+    in_file (str): The name of the input file containing the molecule to process.
+    out_file (str): The name of the output file to which the generated 3D structure
+        should be written.
+    max_time (int): The maximum allowed time (in seconds) for the 3D structure
+        generation of a single molecule.
+
+    Returns:
+    None
+    """
+    status_to_str = { CDPLConfGen.ReturnCode.UNINITIALIZED                  : 'uninitialized',
+                      CDPLConfGen.ReturnCode.TIMEOUT                        : 'max. processing time exceeded',
+                      CDPLConfGen.ReturnCode.ABORTED                        : 'aborted',
+                      CDPLConfGen.ReturnCode.FORCEFIELD_SETUP_FAILED        : 'force field setup failed',
+                      CDPLConfGen.ReturnCode.FORCEFIELD_MINIMIZATION_FAILED : 'force field structure refinement failed',
+                      CDPLConfGen.ReturnCode.FRAGMENT_LIBRARY_NOT_SET       : 'fragment library not available',
+                      CDPLConfGen.ReturnCode.FRAGMENT_CONF_GEN_FAILED       : 'fragment conformer generation failed',
+                      CDPLConfGen.ReturnCode.FRAGMENT_CONF_GEN_TIMEOUT      : 'fragment conformer generation timeout',
+                      CDPLConfGen.ReturnCode.FRAGMENT_ALREADY_PROCESSED     : 'fragment already processed',
+                      CDPLConfGen.ReturnCode.TORSION_DRIVING_FAILED         : 'torsion driving failed',
+                      CDPLConfGen.ReturnCode.CONF_GEN_FAILED                : 'conformer generation failed' }
+
+    # create writer for the generated 3D structures (format specified by file extension)
+    writer = CDPLChem.MolecularGraphWriter(out_file) 
+    # export only a single 3D structure (in case of multi-conf. input molecules)
+    CDPLChem.setMultiConfExportParameter(writer, False)
+    
+    # create and initialize an instance of the class CDPLConfGen.StructureGenerator which will
+    # perform the actual 3D structure generation work
+    struct_gen = CDPLConfGen.StructureGenerator()
+    struct_gen.settings.timeout = max_time * 1000 # apply the -t argument
+
+    mol_list = readMolecule(in_file)
+
+    for ind, mol in enumerate(mol_list):
+        mol_id = ''.join([CDPLChem.getName(mol).strip(), '#'+str(ind+1)]).strip()
+        log.info(f'- Generating 3D structure of molecule {mol_id}...')
+        try:
+            status = gen3DStructure(mol, struct_gen)
+        except Exception as e:
+            log.error(f'Error: 3D structure generation or output for molecule {mol_id} failed: {str(e)}')
+            continue
+        if status == CDPLConfGen.ReturnCode.SUCCESS:
+            # enforce the output of 3D coordinates in case of MDL file formats
+            CDPLChem.setMDLDimensionality(mol, 3)
+            if not writer.write(mol):
+                log.error(f'Error: writing 3D structure of molecule {mol_id} failed')   
+        else:
+            log.error(f'Error generating 3D structure for molecule {ind+1}: {status_to_str[status]}')
+    writer.close()
+
+def main() -> None:
+    args = parseArgs()
+    if args.quiet:
+        log.basicConfig(format="%(levelname)s: %(message)s")
+    else:
+        log.basicConfig(format="%(levelname)s: %(message)s", level=log.DEBUG)
+    process_mol(args.in_file, args.out_file, args.max_time)
 
 if __name__ == '__main__':
     main()
